@@ -1,0 +1,84 @@
+import csv
+from fuzzywuzzy import fuzz
+import anthropic
+
+def read_csv(file_path):
+    data = []
+    with open(file_path, 'r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            data.append(row)
+    return data
+
+def write_csv(file_path, data, fieldnames):
+    with open(file_path, 'w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+
+def deduplicate_data(data, threshold=90):
+    deduplicated_data = []
+    duplicates = []
+
+    for i in range(len(data)):
+        is_duplicate = False
+        for j in range(i + 1, len(data)):
+            ratio = fuzz.token_set_ratio(data[i]['name'], data[j]['name'])
+            if ratio >= threshold:
+                is_duplicate = True
+                duplicates.append((data[i], data[j], ratio))
+                break
+        if not is_duplicate:
+            deduplicated_data.append(data[i])
+
+    return deduplicated_data, duplicates
+
+def send_to_llm_for_analysis(duplicates, threshold_lower=60, threshold_upper=85, api_key=None):
+    potential_llm_pairs = [pair for pair in duplicates if threshold_lower <= pair[2] < threshold_upper]
+
+    if api_key is None:
+        raise ValueError("API key is required for LLM analysis")
+
+    client = anthropic.Client(api_key=api_key)
+    deduplicated_pairs = []
+
+    for pair in potential_llm_pairs:
+        record1, record2, _ = pair
+        prompt = f"Are the following two records duplicates?\n\nRecord 1: {record1}\nRecord 2: {record2}\n\nAnswer: "
+        response = client.completion(prompt=prompt, model="claude-v1", max_tokens_to_sample=1)
+        answer = response["completion"].strip().lower()
+
+        if answer == "no":
+            deduplicated_pairs.append(record1)
+            deduplicated_pairs.append(record2)
+        else:
+            deduplicated_pairs.append(record1)
+
+    return deduplicated_pairs
+
+# Get the file path from the user
+csv_file_path = input("Enter the file path of the CSV file: ")
+
+# Read data from CSV file
+data = read_csv(csv_file_path)
+
+# Deduplicate data using traditional string-based methods
+deduplicated_data, duplicates = deduplicate_data(data)
+
+# Send potential complex duplicates to LLM for further analysis
+api_key = input("Enter your Anthropic API key: ")
+llm_deduplicated_data = send_to_llm_for_analysis(duplicates, api_key=api_key)
+
+# Combine deduplicated data from traditional methods and LLM analysis
+final_deduplicated_data = deduplicated_data + llm_deduplicated_data
+
+# Write final deduplicated data to a new CSV file
+output_file_path = 'deduplicated_data.csv'
+fieldnames = data[0].keys()
+write_csv(output_file_path, final_deduplicated_data, fieldnames)
+
+# Print the results
+print(f"Total records: {len(data)}")
+print(f"Deduplicated records: {len(final_deduplicated_data)}")
+print(f"Duplicate pairs: {len(duplicates)}")
+print(f"LLM deduplicated records: {len(llm_deduplicated_data)}")
